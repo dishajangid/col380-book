@@ -1,0 +1,278 @@
+% chapters/ch01.tex
+% Lecture 15 — CUDA Programming
+% COL380: Introduction to Parallel and Distributed Programming
+
+\chapter{CUDA Programming}
+\label{ch:cuda}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{GPU Model of Computation}
+\label{sec:gpu-model}
+
+% Key points:
+%  - Programs run partly on Host (CPU) and partly on Device (GPU)
+%  - Host orchestrates the computation:
+%      sends computation tasks, data, and code to the GPU
+%  - Host OS system calls are used to allocate memory on the GPU (GDRAM)
+%      even cudaMalloc is issued from host code, not from inside a kernel
+%  - Device executes tasks specified as kernels
+%  - Parallel kernel execution is possible via non-blocking launches (Streams)
+%      multiple kernels can overlap if SMs are not fully occupied
+%  - GPC execution hierarchy (finest to coarsest):
+%      Thread → Warp (32 threads, lockstep) → Block (TB) → TPC → GPC → GPU
+%      A kernel is the unit of computation for a GPC
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Kernels: Definition, Structure, and the \texttt{\_\_global\_\_} Qualifier}
+\label{sec:kernels}
+
+% Key points:
+%  - A kernel is the unit of GPU computation assigned to a GPC
+%  - Defined with the __global__ qualifier prefixed to the return type
+%  - __global__ is a compiler directive (like a pragma) to nvcc:
+%      "compile this function for the device; it is callable from the host"
+%  - Kernel syntax rules:
+%      return type is always void
+%      parameters passed by value or as device pointers
+%      function body written in SPMD style (same code, different thread index)
+%  - Kernel code lives in the same source file as host code (.cu file)
+%  - The kernel binary is NOT sent to the GPU at compile time;
+%      it is transferred on the first invocation (lazy loading)
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Thread Indexing and the Bounds Check}
+\label{sec:thread-indexing}
+
+% Key points:
+%  - SPMD execution model: every thread runs the same kernel code
+%      but operates on a different data element via its unique index
+%  - threadIdx.x alone is NOT globally unique — it resets to 0 in each block
+%  - Globally unique 1D thread index formula:
+%      i = blockIdx.x * blockDim.x + threadIdx.x
+%  - For 2D grids (e.g. matrix kernels):
+%      row = blockIdx.y * blockDim.y + threadIdx.y
+%      col = blockIdx.x * blockDim.x + threadIdx.x
+%  - Why if (i < N) is required:
+%      blocks = ceil(N / threadsPerBlock)  [ceiling, not floor]
+%      ceiling division over-provisions: last block may have idle threads
+%      without the guard, surplus threads perform silent out-of-bounds writes
+%  - Example: N=34, threadsPerBlock=16 → 3 blocks, 48 threads total,
+%      threads 34–47 (14 threads) have no work and must be suppressed
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Device Qualifiers: \texttt{\_\_global\_\_}, \texttt{\_\_device\_\_}, \texttt{\_\_host\_\_}}
+\label{sec:device-qualifiers}
+
+% Key points:
+%  - Three qualifiers; each controls WHERE a function runs and WHO calls it
+%
+%  __global__
+%    - Executes on device, called from host (defines a kernel)
+%    - Return type must be void
+%    - Invocation crosses the PCIe bus (host → GPU)
+%
+%  __device__
+%    - Executes on device, called from device only
+%      (from __global__ or another __device__ function)
+%    - Cannot be called from host code — compile-time error if attempted
+%    - No PCIe round-trip; code already resides in GDRAM
+%    - nvcc applies GPU-specific optimizations (register allocation,
+%      instruction selection) because target architecture is known at compile time
+%    - Call stack on the device mirrors CPU behavior
+%      (program counter, stack pointer, return address all maintained)
+%    - Typical use: helper/math utility functions called many times inside a kernel
+%
+%  __host__
+%    - Executes on CPU, called from CPU — standard C++ function
+%    - Default qualifier: implicit when no qualifier is written
+%    - Can be combined with __device__ to compile both CPU and GPU versions
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Variable Qualifiers and the Memory Hierarchy}
+\label{sec:var-qualifiers}
+
+% Key points:
+%  - Programmer (not hardware) is responsible for placing data
+%    in the right memory space — a key performance design decision
+%
+%  __device__  (GDRAM — Global Device RAM)
+%    - Resides off-chip in GDRAM
+%    - Scope: all threads, all blocks
+%    - Lifetime: entire application
+%    - Latency: high (~200–800 cycles uncached)
+%    - Capacity: large (GBs)
+%    - Dynamic allocation: cudaMalloc from host code
+%
+%  __constant__  (Constant Memory)
+%    - Resides off-chip in a dedicated constant memory region (cached)
+%    - Read-only from device; host writes via cudaMemcpyToSymbol
+%    - Scope: all threads; Lifetime: entire application
+%    - Latency: low for broadcast (all threads in a warp read same address)
+%              serialized (high latency) if threads read different addresses
+%    - Capacity: 64 KB on most architectures
+%    - Best for: read-only constants, filter coefficients, lookup tables
+%
+%  __shared__  (Shared Memory / On-chip SRAM)
+%    - Resides on-chip in the SM's SRAM
+%    - On modern GPUs: dual-configurable with L1 cache (same physical SRAM,
+%      software-configurable split)
+%    - Scope: threads within the same block only
+%    - Lifetime: block lifetime (deallocated when block finishes)
+%    - Latency: very low (~1–4 cycles)
+%    - Capacity: small (~48–164 KB per SM, shared among all resident blocks)
+%    - Tradeoff: faster but scarce — programmer must decide what to stage here
+%    - Basis for tiling optimizations (covered in a future lecture)
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Kernel Invocation, Block/Grid Sizing, and Synchronization}
+\label{sec:invocation}
+
+% Key points:
+%
+%  Chevron (execution configuration) syntax:
+%    kernel_name<<<gridDim, blockDim>>>(args);
+%    gridDim  = number of blocks  (dim3, can be 1D/2D/3D)
+%    blockDim = threads per block (dim3, can be 1D/2D/3D)
+%
+%  Computing the number of blocks — ceiling formula:
+%    blocks = (N + threads_per_block - 1) / threads_per_block
+%    floor division would leave the last few elements uncovered (silent bug)
+%    ceiling over-provisions a few idle threads in the last block (safe with guard)
+%
+%  Hardware limit on threads per block:
+%    determined by SM register file size
+%    e.g. NVIDIA A100: max 2048 threads/block
+%    hardware designers expose this as a tunable limit because optimal
+%    block size is workload-dependent
+%
+%  cudaMalloc — heap allocation on the device (called from host)
+%  cudaMemcpy — data transfer with explicit direction flag:
+%    cudaMemcpyHostToDevice  (H2D): CPU → GPU before kernel
+%    cudaMemcpyDeviceToHost  (D2H): GPU → CPU after kernel
+%
+%  cudaDeviceSynchronize():
+%    kernel launches are asynchronous — host returns immediately after <<<>>>
+%    cudaDeviceSynchronize() blocks the host until all GPU work is done
+%    must be called before D2H cudaMemcpy to avoid a race condition
+%
+%  Choosing block count — workload-dependent tradeoff:
+%    compute-bound: fewer, larger blocks → fewer SMs active → less inter-SM sync
+%    memory-bound:  more blocks → more in-flight warps → better latency hiding
+%    no universal answer — benchmark on target hardware
+%
+%  Inter-SM memory sharing:
+%    within a block: threads share __shared__ memory on the same SM
+%    across blocks:  only L2 cache and GDRAM are accessible to all blocks
+%    there is NO cross-SM shared memory
+%    cross-block communication requires GDRAM + a second kernel launch
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Code Walkthrough: \texttt{tensor\_bench.cu}}
+\label{sec:code-walkthrough}
+
+% Problem:  C[N][M] += A[N][K] * B[K][M],  N = M = K = 2048
+% This lecture covered three of the five variants in the file.
+% Variants 4 (OMP tiled) and 5 (CUDA tiled) are in the file but NOT covered here.
+
+\subsection{Variant 1 --- Sequential (\texttt{tensor\_sequential})}
+\label{ssec:code-seq}
+
+% Key points:
+%  - Plain triple-loop in ikj order (cache-friendly: stride-1 access to B and C)
+%  - Scalar hoist: a_ip = A[i*k + p] pulled out of the j-loop
+%      avoids one redundant load per j iteration
+%  - No parallelism — used as the correctness reference for all other variants
+
+\subsection{Variant 2 --- OMP Flat (\texttt{tensor\_omp\_flat})}
+\label{ssec:code-omp}
+
+% Key points:
+%  - #pragma omp parallel for schedule(static) collapse(2)
+%      collapse(2) flattens the (i, p) loop nest into one iteration space
+%      gives ~n*k = 2048*2048 ≈ 4.2 M iterations to distribute across threads
+%      vs only n = 2048 iterations if collapsing just the outer loop
+%  - #pragma omp simd on the inner j-loop: auto-vectorization hint
+%  - Correctness: each (i,p) pair owns a unique row stripe of C — no data race
+
+\subsection{Variant 3 --- CUDA Naive (\texttt{kernel\_naive})}
+\label{ssec:code-cuda-naive}
+
+% Key points:
+%  - One thread per output element C[row][col]
+%  - 2D grid: block = (16,16) = 256 threads; grid = (ceil(M/16), ceil(N/16))
+%  - 2D index formula:
+%      row = blockIdx.y * blockDim.y + threadIdx.y   (i-index)
+%      col = blockIdx.x * blockDim.x + threadIdx.x   (j-index)
+%  - 2D bounds check: if (row >= n || col >= m) return;
+%  - Each thread loops over all K elements independently in GDRAM
+%      acc += A[row*k + p] * B[p*m + col]  for p = 0..K-1
+%  - __restrict__: promises no pointer aliasing → enables compiler optimizations
+%  - Memory pressure: O(N*M*K) DRAM reads total — no data reuse across threads
+%      this is the bottleneck that shared-memory tiling will fix (future lecture)
+%  - Timing: CUDA Events (cudaEventRecord / cudaEventElapsedTime) measure
+%      pure kernel time on the GPU, excluding H2D and D2H PCIe transfer cost
+%      kernel-only speedup > end-to-end speedup because transfer is excluded
+
+\subsection{Benchmarking Infrastructure}
+\label{ssec:code-bench}
+
+% Key points:
+%  - RUNS = 5; median is reported to reduce OS scheduling jitter
+%      and eliminate one-time GPU warm-up cost from the measurement
+%  - Correctness: max_err() computes max absolute error vs sequential reference
+%      threshold 5e-3 → reported as OK; larger → FAIL
+%      small non-zero errors expected due to floating-point non-associativity
+%  - Transfer cost reported separately:
+%      H2D (A + B): ~32 MB;  D2H (C): ~16 MB
+%      end-to-end time = kernel time + H2D + D2H
+%      important: GPU kernel-only speedup can be much higher than
+%      end-to-end speedup when transfer dominates
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Exercises}
+\label{sec:exercises}
+
+\begin{ppexercises}
+
+  \ppexercise{%
+    % N=1000, threadsPerBlock=256. How many blocks are launched?
+    % How many threads in the last block are idle? Trace the index formula.
+  }
+
+  \ppexercise{%
+    % Extend vector_add to a 2D grid for matrix addition.
+    % Write the row/col index formula and the 2D bounds check.
+  }
+
+  \ppexercise{%
+    % Why can __device__ not be called from host?
+    % What would need to happen architecturally and why would it be costly?
+  }
+
+  \ppexercise{%
+    % A student removes if (i < N). Correct output on one input, wrong on another.
+    % Explain the behavior.
+  }
+
+  \ppexercise{%
+    % In tensor_omp_flat, why does collapse(2) give better load balance
+    % than collapsing only the outer i-loop?
+  }
+
+  \ppexercise{%
+    % In kernel_naive, how many times is each element of A read across the grid?
+    % Compare to sequential. What does this imply for memory bandwidth?
+  }
+
+  \ppexercise{%
+    % Kernel-only speedup = 10x. H2D+D2H transfer = sequential runtime.
+    % What is the end-to-end speedup?
+    % At what transfer/compute ratio does GPU offload cease to be beneficial?
+  }
+
+  \ppexercise{%
+    % 64 registers/thread, 65536-entry register file/SM, max 2048 threads/SM.
+    % What block size maximizes SM occupancy? Show the calculation.
+  }
+
+\end{ppexercises}
