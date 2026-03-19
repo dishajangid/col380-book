@@ -26,6 +26,178 @@
 \section{Kernels: Definition, Structure, and the \texttt{\_\_global\_\_} Qualifier}
 \label{sec:kernels}
 
+
+\subsection{Definition of a Kernel}
+A \textbf{kernel} is the fundamental unit of computation on a GPU. It is a function executed on the \emph{device} (GPU) and invoked from the \emph{host} (CPU). At the hardware level, a kernel represents the unit of work assigned to a \textbf{GPC (Graphics Processing Cluster)}, and is executed in parallel across many threads.
+
+\begin{ppnote}
+In CUDA's execution model:
+\begin{itemize}
+    \item The \textbf{host} orchestrates computation (data movement, kernel launch).
+    \item The \textbf{device} executes kernels in parallel.
+    \item Threads are the smallest unit of execution and are organized into blocks and grids.
+\end{itemize}
+\end{ppnote}
+
+\subsection{Defining a Kernel with \_\_global\_\_}
+
+\begin{ppprogram}{Example CUDA Kernel}{prog:cuda-vector-add}
+\begin{lstlisting}[language=C++]
+__global__ void vector_add(const float *A,
+                           const float *B,
+                           float *C,
+                           int N)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i < N) {
+        C[i] = A[i] + B[i];
+    }
+}
+\end{lstlisting}
+\end{ppprogram}
+
+\begin{ppnote}
+The \verb|__global__| qualifier has precise meaning:
+\begin{itemize}
+    \item It is a \textbf{compiler directive} interpreted by \texttt{nvcc}.
+    \item It instructs the compiler to compile the function for execution on the device and make it callable from the host.
+    \item Such functions are executed on the device but invoked from the host.
+\end{itemize}
+\end{ppnote}
+
+\subsection{Kernel Syntax Rules}
+
+\begin{ppnote}
+CUDA kernels follow strict syntactic and semantic constraints:
+\begin{enumerate}
+    \item \textbf{Return Type:} Always \verb|void|, since many threads execute concurrently with no single return value.
+
+    \item \textbf{Parameter Passing:}
+    \begin{itemize}
+        \item Passed by value (e.g., \verb|int N|)
+        \item Passed as pointers (e.g., \verb|float *A|)
+    \end{itemize}
+    Pointer arguments must refer to \textbf{device memory}.
+
+    \item \textbf{SPMD Execution Model:}
+    \begin{itemize}
+        \item All threads execute the same program.
+        \item Each thread operates on different data using its index.
+    \end{itemize}
+
+\begin{lstlisting}[language=C++]
+int i = blockIdx.x * blockDim.x + threadIdx.x;
+\end{lstlisting}
+
+    \item \textbf{Boundary Checks:}
+\begin{lstlisting}[language=C++]
+if (i < N) {
+    C[i] = A[i] + B[i];
+}
+\end{lstlisting}
+    Missing this leads to undefined memory behavior.
+\end{enumerate}
+\end{ppnote}
+
+\subsection{Kernel Invocation}
+
+\begin{ppprogram}{Kernel Launch Syntax}{prog:cuda-launch}
+\begin{lstlisting}[language=C++]
+int threads_per_block = 256;
+int blocks = (N + threads_per_block - 1) / threads_per_block;
+
+vector_add<<<blocks, threads_per_block>>>(d_A, d_B, d_C, N);
+cudaDeviceSynchronize();
+\end{lstlisting}
+\end{ppprogram}
+
+\begin{ppnote}
+\begin{itemize}
+    \item \verb|<<<blocks, threads_per_block>>>| specifies grid and block size.
+    \item Kernel launches are \textbf{asynchronous} by default.
+    \item \verb|cudaDeviceSynchronize()| enforces completion.
+\end{itemize}
+\end{ppnote}
+
+\subsection{Source File Organization}
+
+\begin{ppnote}
+\begin{itemize}
+    \item Kernel and host code coexist in the same \verb|.cu| file.
+    \item The CUDA compiler \texttt{nvcc} separates:
+    \begin{itemize}
+        \item Host code $\rightarrow$ host compiler
+        \item Device code $\rightarrow$ GPU binary (PTX/SASS)
+    \end{itemize}
+\end{itemize}
+\end{ppnote}
+
+\subsection{Kernel Compilation and Loading}
+
+\begin{ppnote}
+\begin{itemize}
+    \item Kernel binaries are \textbf{not} sent at compile time.
+    \item They are transferred at \textbf{first invocation} (lazy loading).
+\end{itemize}
+\end{ppnote}
+
+\begin{ppnote}
+\textbf{Implications:}
+\begin{itemize}
+    \item First launch incurs overhead (loading / JIT compilation).
+    \item Subsequent launches are faster.
+\end{itemize}
+\end{ppnote}
+
+\subsection{Execution Mapping to Hardware}
+
+\begin{ppnote}
+\begin{itemize}
+    \item Kernel $\rightarrow$ GPCs
+    \item Thread blocks $\rightarrow$ SMs
+    \item Threads $\rightarrow$ executed within SMs
+\end{itemize}
+
+A thread block executes entirely on a single SM, enabling efficient shared memory usage.
+\end{ppnote}
+
+\subsection{Common Pitfalls}
+
+\begin{pppitfall}
+\begin{itemize}
+    \item Missing \verb|__global__| $\rightarrow$ compiled for host
+    \item Using host pointers in kernel $\rightarrow$ invalid access
+    \item Missing bounds check $\rightarrow$ memory corruption
+    \item Assuming synchronous execution $\rightarrow$ race conditions
+\end{itemize}
+\end{pppitfall}
+
+\subsection{Figure Placeholder}
+
+\begin{ppnote}
+\textbf{[Figure Required]}: Kernel $\rightarrow$ Grid $\rightarrow$ Blocks $\rightarrow$ Threads
+
+This hierarchy explains how a single kernel expands into massive parallel execution.
+\end{ppnote}
+
+\subsection{Summary}
+
+\begin{ppnote}
+\begin{itemize}
+    \item A kernel is the unit of GPU computation assigned to a GPC.
+    \item Defined using the \verb|__global__| qualifier.
+    \item \verb|__global__| acts as a compiler directive to \texttt{nvcc}.
+    \item Kernels:
+    \begin{itemize}
+        \item Always return \verb|void|
+        \item Accept value and device pointer arguments
+        \item Follow SPMD execution
+    \end{itemize}
+    \item Kernel and host code reside in the same \verb|.cu| file.
+    \item Kernel binaries are loaded on first invocation.
+\end{itemize}
+\end{ppnote}
 % Key points:
 %  - A kernel is the unit of GPU computation assigned to a GPC
 %  - Defined with the __global__ qualifier prefixed to the return type
