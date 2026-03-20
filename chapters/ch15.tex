@@ -88,14 +88,14 @@ serializes launches; explicit streams are required for true concurrency.
 \subsection{Definition of a Kernel}
 A \textbf{kernel} is the fundamental unit of computation on a GPU. It is a function executed on the \emph{device} (GPU) and invoked from the \emph{host} (CPU). At the hardware level, a kernel represents the unit of work assigned to a \textbf{GPC (Graphics Processing Cluster)}, and is executed in parallel across many threads.
 
-\begin{ppnote}
-In CUDA's execution model:
-\begin{itemize}
-    \item The \textbf{host} orchestrates computation (data movement, kernel launch).
-    \item The \textbf{device} executes kernels in parallel.
-    \item Threads are the smallest unit of execution and are organized into blocks and grids.
-\end{itemize}
-\end{ppnote}
+% \begin{ppnote}
+% In CUDA's execution model:
+% \begin{itemize}
+%     \item The \textbf{host} orchestrates computation (data movement, kernel launch).
+%     \item The \textbf{device} executes kernels in parallel.
+%     \item Threads are the smallest unit of execution and are organized into blocks and grids.
+% \end{itemize}
+% \end{ppnote}
 
 \subsection{Defining a Kernel with \_\_global\_\_}
 
@@ -239,23 +239,24 @@ A thread block executes entirely on a single SM, enabling efficient shared memor
 This hierarchy explains how a single kernel expands into massive parallel execution.
 \end{ppnote}
 
-\subsection{Summary}
+% \subsection{Summary}
 
-\begin{ppnote}
-\begin{itemize}
-    \item A kernel is the unit of GPU computation assigned to a GPC.
-    \item Defined using the \verb|__global__| qualifier.
-    \item \verb|__global__| acts as a compiler directive to \texttt{nvcc}.
-    \item Kernels:
-    \begin{itemize}
-        \item Always return \verb|void|
-        \item Accept value and device pointer arguments
-        \item Follow SPMD execution
-    \end{itemize}
-    \item Kernel and host code reside in the same \verb|.cu| file.
-    \item Kernel binaries are loaded on first invocation.
-\end{itemize}
-\end{ppnote}
+% \begin{ppnote}
+% \begin{itemize}
+%     \item A kernel is the unit of GPU computation assigned to a GPC.
+%     \item Defined using the \verb|__global__| qualifier.
+%     \item \verb|__global__| acts as a compiler directive to \texttt{nvcc}.
+%     \item Kernels:
+%     \begin{itemize}
+%         \item Always return \verb|void|
+%         \item Accept value and device pointer arguments
+%         \item Follow SPMD execution
+%     \end{itemize}
+%     \item Kernel and host code reside in the same \verb|.cu| file.
+%     \item Kernel binaries are loaded on first invocation.
+% \end{itemize}
+% \end{ppnote}
+
 % Key points:
 %  - A kernel is the unit of GPU computation assigned to a GPC
 %  - Defined with the __global__ qualifier prefixed to the return type
@@ -288,6 +289,89 @@ This hierarchy explains how a single kernel expands into massive parallel execut
 %      without the guard, surplus threads perform silent out-of-bounds writes
 %  - Example: N=34, threadsPerBlock=16 → 3 blocks, 48 threads total,
 %      threads 34–47 (14 threads) have no work and must be suppressed
+
+
+\subsection{The SPMD Execution Model}
+\label{ssec:spmd}
+
+CUDA follows a \ppterm{Single Program Multiple Data} (SPMD) model: every
+thread executes identical kernel code, but each thread operates on a different
+data element determined by its unique thread index. The programmer writes the
+computation for a \emph{single} element; the hardware replicates it across all
+launched threads.
+
+\subsection{Computing the Globally Unique Thread Index}
+\label{ssec:thread-index}
+
+Three built-in read-only variables identify a thread's position:
+
+\begin{itemize}
+  \item \ppinline{threadIdx.x} --- index within the block (resets to 0 in
+    every block; \emph{not} globally unique).
+  \item \ppinline{blockIdx.x} --- index of the block within the grid.
+  \item \ppinline{blockDim.x} --- number of threads per block (same for all
+    blocks in a launch).
+\end{itemize}
+
+The standard globally unique index formula for a one-dimensional grid is:
+\[
+  i \;=\; \texttt{blockIdx.x} \times \texttt{blockDim.x}
+          \;+\; \texttt{threadIdx.x}
+\]
+
+For a two-dimensional grid (used in matrix kernels such as
+Program~\ref{prog:tensor-cuda-naive}):
+\[
+  \texttt{row} = \texttt{blockIdx.y} \times \texttt{blockDim.y}
+               + \texttt{threadIdx.y}, \quad
+  \texttt{col} = \texttt{blockIdx.x} \times \texttt{blockDim.x}
+               + \texttt{threadIdx.x}
+\]
+
+\subsection{Why the Bounds Check \texttt{if (i < N)} Is Required}
+\label{ssec:bounds-check}
+
+The number of blocks must be an integer, so block count is computed using
+\emph{ceiling} division:
+\[
+  \text{blocks}
+  = \left\lceil \frac{N}{\text{threadsPerBlock}} \right\rceil
+  = \frac{N + \text{threadsPerBlock} - 1}{\text{threadsPerBlock}}
+\]
+
+Ceiling division may create surplus threads in the last block whose index
+$i \geq N$. Without the guard \ppinline{if (i < N)}, those threads perform
+silent out-of-bounds memory writes---no segmentation fault is raised.
+
+\begin{pppitfall}
+Omitting \ppinline{if (i < N)} when using ceiling block-count arithmetic
+causes silent out-of-bounds writes to device memory. The corruption produces
+no runtime error, making it one of the most common and hardest-to-diagnose
+CUDA bugs.
+\end{pppitfall}
+
+\begin{ppexample}
+$N = 34$, \ppinline{threadsPerBlock = 16}.
+$\lceil 34/16 \rceil = 3$ blocks $\Rightarrow$ 48 threads total.
+Threads $34, 35, \ldots, 47$ (14 threads in the last block) have no
+corresponding array element and must be suppressed by the bounds check.
+\end{ppexample}
+
+Program~\ref{prog:vec-add-bounded} shows the corrected, production-style
+vector addition kernel that incorporates both multi-block indexing and the
+bounds check.
+
+\begin{ppprogram}{Vector addition kernel with bounds check}{prog:vec-add-bounded}
+\begin{lstlisting}[language=C++]
+__global__ void vector_add(const float *A, const float *B,
+                           float *C, int N)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N)
+        C[i] = A[i] + B[i];
+}
+\end{lstlisting}
+\end{ppprogram}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Device Qualifiers: \texttt{\_\_global\_\_}, \texttt{\_\_device\_\_}, \texttt{\_\_host\_\_}}
