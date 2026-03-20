@@ -977,3 +977,31 @@ computation is large enough that kernel time dominates transfer time. For
 workloads that reuse the same data across many kernel launches, the transfer
 cost is amortised over multiple runs, making the kernel-only speedup a more
 accurate predictor of overall performance.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Contribution Statement}
+\label{sec:contributions}
+ 
+This chapter was transcribed and compiled from Lecture 15 (March 13, 2026)
+by the following students of COL380:
+ 
+\begin{table}[h]
+\centering
+\caption{Section-wise contributions.}
+\label{tab:contributions}
+\begin{tabular}{lll}
+\hline
+\textbf{Section} & \textbf{Title} & \textbf{Author} \\
+\hline
+\ref{sec:gpu-model}         & GPU Model of Computation                          & Disha \\
+\ref{sec:kernels}           & Kernels: Definition, Structure, \texttt{\_\_global\_\_} & Viraat \\
+\ref{sec:thread-indexing}   & Thread Indexing and the Bounds Check              & Disha \\
+\ref{sec:device-qualifiers} & Device Qualifiers                                 & Sanyam \\
+\ref{sec:var-qualifiers}    & Variable Qualifiers and the Memory Hierarchy      & Piyush \\
+\ref{sec:invocation}        & Kernel Invocation, Block/Grid Sizing, Synchronization & Soumodeep \\
+\ref{sec:code-walkthrough}  & Code Walkthrough: \texttt{tensor\_bench.cu}       & Disha \\
+\ref{sec:exercises}         & Exercises and Solutions                           & Disha \\
+\hline
+\end{tabular}
+\end{table}
+ 
