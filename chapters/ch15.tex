@@ -802,7 +802,24 @@ errors are expected between parallel variants and the sequential reference
 because floating-point addition is non-associative and different execution
 orders produce slightly different rounding.
 
-
+%─────────────────────────────────────────────────────────────────────────────
+\section{Looking Ahead}
+\label{sec:looking-ahead}
+ 
+The next lecture will cover:
+\begin{itemize}
+  \item \textbf{Shared memory tiling} --- using \ppinline{\_\_shared\_\_} to
+    stage tiles of $A$ and $B$, reducing DRAM traffic from $O(NMK)$ to
+    $O(NMK/\text{TILE})$ (the \ppinline{kernel\_tiled} variant in
+    \texttt{tensor\_bench.cu}).
+  \item \textbf{CUDA synchronization primitives} ---
+    \ppinline{\_\_syncthreads()}, atomic operations, cooperative groups.
+  \item \textbf{Common CUDA pitfalls} --- bank conflicts, warp divergence,
+    uncoalesced memory accesses.
+  \item \textbf{CUDA performance optimization} --- occupancy tuning,
+    memory coalescing, instruction-level parallelism.
+\end{itemize}
+ 
 %─────────────────────────────────────────────────────────────────────────────
 \section{Exercises}
 \label{sec:exercises}
@@ -815,7 +832,6 @@ orders produce slightly different rounding.
   your answer by tracing the index formula for the last block.}
 \end{ppexercises}
 
-\begin{ppnote}
 \textbf{Solution.}
 Using the ceiling formula:
 \[
@@ -839,7 +855,6 @@ Elements $[768, 999]$ (232 threads) are within bounds and do useful work.
 Elements $[1000, 1023]$ (24 threads) have $i \geq N$ and are suppressed by
 \ppinline{if (i < N)}. Without that guard, these threads would write beyond
 the end of the allocated array with no runtime error.
-\end{ppnote}
 
 % ── Exercise 2 ───────────────────────────────────────────────────────────────
 \begin{ppexercises}
@@ -849,7 +864,6 @@ the end of the allocated array with no runtime error.
   before copying results back to the host.}
 \end{ppexercises}
 
-\begin{ppnote}
 \textbf{Solution.}
 When the host calls \ppinline{kernel<<<grid, block>>>(...)} the call returns
 immediately --- the host continues executing subsequent statements while the
@@ -863,7 +877,6 @@ because that transfer is also asynchronous with respect to any in-flight
 kernel. Without the synchronisation barrier, the copy may begin while the
 kernel is still writing to device memory, producing partially written or
 stale results with no error message.
-\end{ppnote}
 
 % ── Exercise 3 ───────────────────────────────────────────────────────────────
 \begin{ppexercises}
@@ -874,7 +887,6 @@ stale results with no error message.
   output when $N = 300$. Explain both observations.}
 \end{ppexercises}
 
-\begin{ppnote}
 \textbf{Solution.}
 
 \textit{Correct for $N = 256$.}
@@ -895,7 +907,6 @@ and the output is corrupted.
 The root cause in both cases is the same: the total thread count is always
 rounded up to a whole number of blocks, so the final block almost always
 contains some idle threads that must be explicitly suppressed.
-\end{ppnote}
 
 % ── Exercise 4 ───────────────────────────────────────────────────────────────
 \begin{ppexercises}
@@ -907,7 +918,6 @@ contains some idle threads that must be explicitly suppressed.
   argument using $n = k = 2048$ and 40 threads.}
 \end{ppexercises}
 
-\begin{ppnote}
 \textbf{Solution.}
 Without \ppinline{collapse(2)}, only the outer $i$-loop is parallelised.
 It has $n = 2048$ iterations, giving each of the 40 threads approximately
@@ -925,7 +935,6 @@ iterations --- more than $2000\times$ the work compared to the $i$-only case.
 The OpenMP runtime has far greater scheduling flexibility, load balance
 improves across all 40 threads, and the innermost serial bottleneck is
 eliminated.
-\end{ppnote}
 
 % ── Exercise 5 ───────────────────────────────────────────────────────────────
 \begin{ppexercises}
