@@ -374,8 +374,49 @@ __global__ void vector_add(const float *A, const float *B,
 \end{ppprogram}
 
 % ─────────────────────────────────────────────────────────────────────────────
+
 \section{Device Qualifiers: \texttt{\_\_global\_\_}, \texttt{\_\_device\_\_}, \texttt{\_\_host\_\_}}
 \label{sec:device-qualifiers}
+
+In the CUDA programming model, the programmer is responsible for explicitly partitioning code between the host and the device. This is managed through \ppterm{execution space qualifiers}, which act as directives for the \texttt{nvcc} compiler during the cross-compilation process. These qualifiers dictate both the execution site—where the code runs—and the invocation site—where the call originates. 
+
+Because both host and device portions of a program are eventually packaged into a single common executable, these qualifiers ensure the runtime environment can correctly load and trigger device code onto the GPU as required.
+
+\subsection{The \texttt{\_\_global\_\_} Qualifier: Kernels}
+
+The \ppterm{\_\_global\_\_} qualifier defines a \textbf{kernel}, which serves as the primary entry point for parallel execution on the GPU. While a kernel executes on the device, it is uniquely characterized by its invocation from the host code.
+
+\begin{itemize}
+    \item \textbf{Asynchronous RPC Model:} Architecturally, a kernel launch functions as an asynchronous Remote Procedure Call (RPC). The host thread triggers the task across the high-latency PCIe bus and immediately proceeds to its next instruction without waiting for the GPU to finish.
+    \item \textbf{Return Type Constraints:} Kernels are strictly required to have a \ppinline{void} return type. This is because they are executed across a massive grid of threads simultaneously, meaning there is no single return value to provide back to the host caller.
+    \item \textbf{Execution Mapping:} At the hardware level, a kernel represents the unit of work assigned to a Graphics Processing Cluster (GPC).
+\end{itemize}
+
+\subsection{The \texttt{\_\_device\_\_} Qualifier: GPU Helpers}
+
+Internal logic and mathematical utilities intended for use within a kernel are defined using the \ppterm{\_\_device\_\_} qualifier. These entities reside and execute entirely on the GPU.
+
+\begin{itemize}
+    \item \textbf{Restricted Invocation:} These functions can only be called from other device-side code, such as a \ppinline{\_\_global\_\_} kernel or another \ppinline{\_\_device\_\_} function. Attempting to call them from the host results in a compile-time error.
+    \item \textbf{Zero PCIe Overhead:} Since the code and data already reside in the device's GDRAM, these calls do not cross the PCIe bus, making them highly efficient for frequent utility tasks.
+    \item \textbf{Hardware Call Stack:} Despite the SIMT nature of GPUs, the call stack for \ppinline{\_\_device\_\_} functions mirrors traditional CPU behavior, maintaining its own program counter, stack pointer, and return addresses.
+    \item \textbf{Compiler Optimizations:} Because the target architecture is known at compile time, \texttt{nvcc} applies aggressive GPU-specific optimizations, including specialized register allocation and instruction selection.
+\end{itemize}
+
+\subsection{The \texttt{\_\_host\_\_} Qualifier: CPU Logic}
+
+Code intended for standard execution on the CPU is marked with the \ppterm{\_\_host\_\_} qualifier. This handles the orchestration of the parallel application, including memory allocation and data transmission.
+
+\begin{itemize}
+    \item \textbf{Implicit Default:} This is the default status for any function; any code defined without a CUDA-specific prefix is treated as \ppinline{\_\_host\_\_} by the compiler.
+    \item \textbf{Native Translation:} During compilation, \texttt{nvcc} identifies host sections and leverages the system’s native C++ compiler (such as GCC) for translation into CPU binaries.
+    \item \textbf{Resource Access:} Host functions have full access to Host RAM and standard system calls but cannot directly manipulate device-private memory without using specialized runtime functions like \texttt{cudaMemcpy}.
+\end{itemize}
+
+\begin{ppnote}
+\textbf{Combining Qualifiers and Managed Memory:} 
+To facilitate code reuse, CUDA allows qualifiers to be combined. A function marked \ppinline{\_\_host\_\_ \_\_device\_\_} is compiled into two distinct binaries, allowing the same logic to serve both execution spaces. Furthermore, the \ppinline{\_\_managed\_\_} keyword can be used for variables to ensure they are visible and accessible to both the host and device contexts simultaneously.
+\end{ppnote}
 
 % Key points:
 %  - Three qualifiers; each controls WHERE a function runs and WHO calls it
