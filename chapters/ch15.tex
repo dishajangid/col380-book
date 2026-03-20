@@ -22,6 +22,64 @@
 %      Thread → Warp (32 threads, lockstep) → Block (TB) → TPC → GPC → GPU
 %      A kernel is the unit of computation for a GPC
 
+A CUDA program runs partly on the \ppterm{host} (CPU) and partly on the
+\ppterm{device} (GPU). The host orchestrates the entire computation: it
+allocates memory on both sides, transfers data to the GPU, launches work, and
+retrieves results. The device executes the compute-intensive portions of the
+program, which are expressed as special functions called \ppterm{kernels}.
+
+\begin{ppkey}
+The host sends both data \emph{and} code to the device. Even device-side
+heap memory must be allocated through host-level system calls---the host OS
+issues the necessary driver calls on the program's behalf.
+\end{ppkey}
+
+\subsection{Host and Device}
+\label{ssec:host-device}
+
+The host machine is a conventional CPU system. Within a CUDA program, the
+programmer writes host code (ordinary C/C++ that runs on the CPU) and device
+code (kernel functions that run on the GPU) in the same source file, saved
+with the \texttt{.cu} extension. The NVIDIA compiler \texttt{nvcc} separates
+the two: device code is compiled for the GPU, and host code is passed through
+to the system C++ compiler (typically GCC).
+
+\subsection{The GPU Execution Hierarchy}
+\label{ssec:execution-hierarchy}
+
+The logical execution hierarchy inside a GPU, from finest to coarsest, is:
+
+\begin{itemize}
+  \item \ppterm{Thread} --- the smallest unit of execution. Each thread runs
+    an instance of the kernel with its own register state.
+  \item \ppterm{Warp} --- 32 threads that execute in lockstep on the same
+    functional units. The warp is the hardware scheduling unit.
+  \item \ppterm{Thread Block (TB)} --- a programmer-visible group of threads
+    mapped to a single Streaming Multiprocessor (SM). Threads within a block
+    can communicate through fast on-chip shared memory.
+  \item \ppterm{TPC (Texture Processing Cluster)} --- a grouping of SMs.
+  \item \ppterm{GPC (Graphics Processing Cluster)} --- a grouping of TPCs.
+    A kernel is the unit of computation assigned to a GPC.
+  \item \ppterm{GPU} --- the full device, comprising all GPCs.
+\end{itemize}
+
+\begin{ppnote}
+Tensor Cores (four per SM) are not assigned per-thread. The SM warp scheduler
+identifies warps whose instructions require tensor arithmetic and routes them
+to an available Tensor Core. A warp of 32 threads is the basic execution unit
+for a Tensor Core operation.
+\end{ppnote}
+
+\subsection{Parallel Kernel Execution and Streams}
+\label{ssec:streams}
+
+Multiple kernels can execute concurrently on the same GPU provided there are
+unallocated SMs. Concurrent launches are achieved through \ppterm{CUDA Streams}:
+an ordered queue of GPU operations in which operations across different streams
+may overlap. By default every kernel launch uses the null stream, which
+serializes launches; explicit streams are required for true concurrency.
+
+
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Kernels: Definition, Structure, and the \texttt{\_\_global\_\_} Qualifier}
 \label{sec:kernels}
