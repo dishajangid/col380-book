@@ -9,19 +9,6 @@
 \section{GPU Model of Computation}
 \label{sec:gpu-model}
 
-% Key points:
-%  - Programs run partly on Host (CPU) and partly on Device (GPU)
-%  - Host orchestrates the computation:
-%      sends computation tasks, data, and code to the GPU
-%  - Host OS system calls are used to allocate memory on the GPU (GDRAM)
-%      even cudaMalloc is issued from host code, not from inside a kernel
-%  - Device executes tasks specified as kernels
-%  - Parallel kernel execution is possible via non-blocking launches (Streams)
-%      multiple kernels can overlap if SMs are not fully occupied
-%  - GPC execution hierarchy (finest to coarsest):
-%      Thread → Warp (32 threads, lockstep) → Block (TB) → TPC → GPC → GPU
-%      A kernel is the unit of computation for a GPC
-
 A CUDA program runs partly on the \ppterm{host} (CPU) and partly on the
 \ppterm{device} (GPU). The host orchestrates the entire computation: it
 allocates memory on both sides, transfers data to the GPU, launches work, and
@@ -87,15 +74,6 @@ serializes launches; explicit streams are required for true concurrency.
 
 \subsection{Definition of a Kernel}
 A \textbf{kernel} is the fundamental unit of computation on a GPU. It is a function executed on the \emph{device} (GPU) and invoked from the \emph{host} (CPU). At the hardware level, a kernel represents the unit of work assigned to a \textbf{GPC (Graphics Processing Cluster)}, and is executed in parallel across many threads.
-
-% \begin{ppnote}
-% In CUDA's execution model:
-% \begin{itemize}
-%     \item The \textbf{host} orchestrates computation (data movement, kernel launch).
-%     \item The \textbf{device} executes kernels in parallel.
-%     \item Threads are the smallest unit of execution and are organized into blocks and grids.
-% \end{itemize}
-% \end{ppnote}
 
 \subsection{Defining a Kernel with \_\_global\_\_}
 
@@ -239,57 +217,9 @@ A thread block executes entirely on a single SM, enabling efficient shared memor
 This hierarchy explains how a single kernel expands into massive parallel execution.
 \end{ppnote}
 
-% \subsection{Summary}
-
-% \begin{ppnote}
-% \begin{itemize}
-%     \item A kernel is the unit of GPU computation assigned to a GPC.
-%     \item Defined using the \verb|__global__| qualifier.
-%     \item \verb|__global__| acts as a compiler directive to \texttt{nvcc}.
-%     \item Kernels:
-%     \begin{itemize}
-%         \item Always return \verb|void|
-%         \item Accept value and device pointer arguments
-%         \item Follow SPMD execution
-%     \end{itemize}
-%     \item Kernel and host code reside in the same \verb|.cu| file.
-%     \item Kernel binaries are loaded on first invocation.
-% \end{itemize}
-% \end{ppnote}
-
-% Key points:
-%  - A kernel is the unit of GPU computation assigned to a GPC
-%  - Defined with the __global__ qualifier prefixed to the return type
-%  - __global__ is a compiler directive (like a pragma) to nvcc:
-%      "compile this function for the device; it is callable from the host"
-%  - Kernel syntax rules:
-%      return type is always void
-%      parameters passed by value or as device pointers
-%      function body written in SPMD style (same code, different thread index)
-%  - Kernel code lives in the same source file as host code (.cu file)
-%  - The kernel binary is NOT sent to the GPU at compile time;
-%      it is transferred on the first invocation (lazy loading)
-
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Thread Indexing and the Bounds Check}
 \label{sec:thread-indexing}
-
-% Key points:
-%  - SPMD execution model: every thread runs the same kernel code
-%      but operates on a different data element via its unique index
-%  - threadIdx.x alone is NOT globally unique — it resets to 0 in each block
-%  - Globally unique 1D thread index formula:
-%      i = blockIdx.x * blockDim.x + threadIdx.x
-%  - For 2D grids (e.g. matrix kernels):
-%      row = blockIdx.y * blockDim.y + threadIdx.y
-%      col = blockIdx.x * blockDim.x + threadIdx.x
-%  - Why if (i < N) is required:
-%      blocks = ceil(N / threadsPerBlock)  [ceiling, not floor]
-%      ceiling division over-provisions: last block may have idle threads
-%      without the guard, surplus threads perform silent out-of-bounds writes
-%  - Example: N=34, threadsPerBlock=16 → 3 blocks, 48 threads total,
-%      threads 34–47 (14 threads) have no work and must be suppressed
-
 
 \subsection{The SPMD Execution Model}
 \label{ssec:spmd}
@@ -418,170 +348,468 @@ Code intended for standard execution on the CPU is marked with the \ppterm{\_\_h
 To facilitate code reuse, CUDA allows qualifiers to be combined. A function marked \ppinline{\_\_host\_\_ \_\_device\_\_} is compiled into two distinct binaries, allowing the same logic to serve both execution spaces. Furthermore, the \ppinline{\_\_managed\_\_} keyword can be used for variables to ensure they are visible and accessible to both the host and device contexts simultaneously.
 \end{ppnote}
 
-% Key points:
-%  - Three qualifiers; each controls WHERE a function runs and WHO calls it
-%
-%  __global__
-%    - Executes on device, called from host (defines a kernel)
-%    - Return type must be void
-%    - Invocation crosses the PCIe bus (host → GPU)
-%
-%  __device__
-%    - Executes on device, called from device only
-%      (from __global__ or another __device__ function)
-%    - Cannot be called from host code — compile-time error if attempted
-%    - No PCIe round-trip; code already resides in GDRAM
-%    - nvcc applies GPU-specific optimizations (register allocation,
-%      instruction selection) because target architecture is known at compile time
-%    - Call stack on the device mirrors CPU behavior
-%      (program counter, stack pointer, return address all maintained)
-%    - Typical use: helper/math utility functions called many times inside a kernel
-%
-%  __host__
-%    - Executes on CPU, called from CPU — standard C++ function
-%    - Default qualifier: implicit when no qualifier is written
-%    - Can be combined with __device__ to compile both CPU and GPU versions
-
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Variable Qualifiers and the Memory Hierarchy}
 \label{sec:var-qualifiers}
 
-% Key points:
-%  - Programmer (not hardware) is responsible for placing data
-%    in the right memory space — a key performance design decision
-%
-%  __device__  (GDRAM — Global Device RAM)
-%    - Resides off-chip in GDRAM
-%    - Scope: all threads, all blocks
-%    - Lifetime: entire application
-%    - Latency: high (~200–800 cycles uncached)
-%    - Capacity: large (GBs)
-%    - Dynamic allocation: cudaMalloc from host code
-%
-%  __constant__  (Constant Memory)
-%    - Resides off-chip in a dedicated constant memory region (cached)
-%    - Read-only from device; host writes via cudaMemcpyToSymbol
-%    - Scope: all threads; Lifetime: entire application
-%    - Latency: low for broadcast (all threads in a warp read same address)
-%              serialized (high latency) if threads read different addresses
-%    - Capacity: 64 KB on most architectures
-%    - Best for: read-only constants, filter coefficients, lookup tables
-%
-%  __shared__  (Shared Memory / On-chip SRAM)
-%    - Resides on-chip in the SM's SRAM
-%    - On modern GPUs: dual-configurable with L1 cache (same physical SRAM,
-%      software-configurable split)
-%    - Scope: threads within the same block only
-%    - Lifetime: block lifetime (deallocated when block finishes)
-%    - Latency: very low (~1–4 cycles)
-%    - Capacity: small (~48–164 KB per SM, shared among all resident blocks)
-%    - Tradeoff: faster but scarce — programmer must decide what to stage here
-%    - Basis for tiling optimizations (covered in a future lecture)
+Variables in CUDA carry qualifiers that determine their physical storage
+location, access latency, and lifetime. The programmer---not the hardware---is
+responsible for choosing the right memory space for each data structure.
+
+\subsection{\texttt{\_\_device\_\_} --- Global Device Memory (GDRAM)}
+\label{ssec:var-device}
+
+\begin{lstlisting}[language=C++]
+__device__ float d_buffer[1024];
+\end{lstlisting}
+
+Resides off-chip in GDRAM. Scope: all threads, all blocks. Lifetime: entire
+application. Latency: high (${\sim}200$--$800$ cycles uncached). Capacity:
+several GB on a modern GPU. Dynamically-sized arrays are allocated via
+\ppinline{cudaMalloc} from host code.
+
+\subsection{\texttt{\_\_constant\_\_} --- Constant Memory}
+\label{ssec:var-constant}
+
+\begin{lstlisting}[language=C++]
+__constant__ float coeffs[64];
+\end{lstlisting}
+
+Resides off-chip in a dedicated constant memory region backed by a dedicated
+cache. Read-only from device code; the host writes to it via
+\ppinline{cudaMemcpyToSymbol}. Scope: all threads. Lifetime: entire
+application. Capacity: 64\,KB on most architectures.
+
+Latency is low when all threads in a warp read the \emph{same} address
+(hardware broadcasts one fetch to all 32 threads). When threads read
+\emph{different} addresses the requests are serialized, eliminating the
+latency advantage.
+
+\begin{ppnote}
+Constant memory is best suited for read-only values that are uniform across
+threads: filter coefficients, physical constants, small lookup tables. It is
+not a substitute for GDRAM when threads access distinct addresses.
+\end{ppnote}
+
+\subsection{\texttt{\_\_shared\_\_} --- Shared Memory}
+\label{ssec:var-shared}
+
+\begin{lstlisting}[language=C++]
+__shared__ float tile[32][32];
+\end{lstlisting}
+
+Resides on-chip in the SM's SRAM. On modern NVIDIA GPUs the L1 data cache and
+shared memory occupy the same physical SRAM; the split between them is
+software-configurable (dual-configurable). Scope: threads within the same
+block only. Lifetime: block lifetime. Latency: very low (${\sim}1$--$4$
+cycles). Capacity: small---typically 48\,KB to 164\,KB per SM, shared among
+all resident blocks.
+
+Because shared memory is scarce, the programmer must explicitly decide what
+data to stage there. It is the basis for tiling optimizations (covered in the
+next lecture).
+
+\begin{pppitfall}
+Shared memory is private to a block. Data written by one block is never
+visible to another block. Cross-block communication must go through GDRAM.
+\end{pppitfall}
+
+\subsection{Memory Hierarchy Summary}
+\label{ssec:mem-summary}
+
+% NOTE FOR EDITOR: Insert the GPU memory hierarchy figure from lec15-CUDA.pdf
+% here, showing the layered hierarchy from registers through shared/L1,
+% L2 cache, GDRAM, to host DRAM, annotated with latencies and capacities.
+
+\begin{table}[h]
+\centering
+\caption{GPU memory spaces and their properties.}
+\label{tab:mem-hierarchy}
+\begin{tabular}{lllll}
+\hline
+\textbf{Qualifier} & \textbf{Location} & \textbf{Latency} &
+  \textbf{Scope} & \textbf{Lifetime} \\
+\hline
+(register)              & On-chip registers & $\sim$1 cycle         & Thread      & Thread \\
+\ppinline{\_\_shared\_\_}   & On-chip SRAM      & $\sim$1--4 cycles     & Block       & Block  \\
+\ppinline{\_\_constant\_\_} & Off-chip (cached) & Low (broadcast)       & All threads & App    \\
+\ppinline{\_\_device\_\_}   & GDRAM             & $\sim$200--800 cycles & All threads & App    \\
+\hline
+\end{tabular}
+\end{table}
+
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Kernel Invocation, Block/Grid Sizing, and Synchronization}
 \label{sec:invocation}
 
-% Key points:
-%
-%  Chevron (execution configuration) syntax:
-%    kernel_name<<<gridDim, blockDim>>>(args);
-%    gridDim  = number of blocks  (dim3, can be 1D/2D/3D)
-%    blockDim = threads per block (dim3, can be 1D/2D/3D)
-%
-%  Computing the number of blocks — ceiling formula:
-%    blocks = (N + threads_per_block - 1) / threads_per_block
-%    floor division would leave the last few elements uncovered (silent bug)
-%    ceiling over-provisions a few idle threads in the last block (safe with guard)
-%
-%  Hardware limit on threads per block:
-%    determined by SM register file size
-%    e.g. NVIDIA A100: max 2048 threads/block
-%    hardware designers expose this as a tunable limit because optimal
-%    block size is workload-dependent
-%
-%  cudaMalloc — heap allocation on the device (called from host)
-%  cudaMemcpy — data transfer with explicit direction flag:
-%    cudaMemcpyHostToDevice  (H2D): CPU → GPU before kernel
-%    cudaMemcpyDeviceToHost  (D2H): GPU → CPU after kernel
-%
-%  cudaDeviceSynchronize():
-%    kernel launches are asynchronous — host returns immediately after <<<>>>
-%    cudaDeviceSynchronize() blocks the host until all GPU work is done
-%    must be called before D2H cudaMemcpy to avoid a race condition
-%
-%  Choosing block count — workload-dependent tradeoff:
-%    compute-bound: fewer, larger blocks → fewer SMs active → less inter-SM sync
-%    memory-bound:  more blocks → more in-flight warps → better latency hiding
-%    no universal answer — benchmark on target hardware
-%
-%  Inter-SM memory sharing:
-%    within a block: threads share __shared__ memory on the same SM
-%    across blocks:  only L2 cache and GDRAM are accessible to all blocks
-%    there is NO cross-SM shared memory
-%    cross-block communication requires GDRAM + a second kernel launch
+\subsection{The Chevron (Execution Configuration) Syntax}
+\label{ssec:chevron}
+
+A kernel is launched from host code using \ppterm{triple-chevron} notation:
+
+\begin{lstlisting}[language=C++]
+kernel_name<<<gridDim, blockDim>>>(arg1, arg2, ...);
+\end{lstlisting}
+
+\ppinline{gridDim} specifies the number of blocks (a \ppinline{dim3} value,
+supporting 1D, 2D, or 3D grids). \ppinline{blockDim} specifies threads per
+block. Their product gives the total number of launched threads.
+
+\subsection{Computing the Number of Blocks}
+\label{ssec:num-blocks}
+
+The number of threads per block is programmer-specified, subject to a hardware
+upper limit (e.g.\ 2048 on the NVIDIA A100; determined by the SM's register
+file size). A common default is 256. The block count is computed via ceiling
+division:
+
+\begin{lstlisting}[language=C++]
+int threads_per_block = 256;
+int blocks = (N + threads_per_block - 1) / threads_per_block;
+\end{lstlisting}
+
+\begin{ppnote}
+Hardware designers expose the threads-per-block limit as a tunable parameter
+rather than fixing it, because the optimal value is workload-dependent.
+Compute-bound workloads may favour fewer, larger blocks (fewer active SMs,
+less inter-SM overhead); memory-bound workloads benefit from more blocks to
+keep the memory pipeline busy through latency hiding.
+\end{ppnote}
+
+\subsection{\texttt{cudaDeviceSynchronize()}}
+\label{ssec:device-sync}
+
+Kernel launches are \emph{asynchronous}: the \ppinline{<<<...>>>} call
+returns immediately and the host continues executing subsequent statements
+while the GPU works in parallel. At the point where the host requires the
+GPU's results, the programmer must insert \ppinline{cudaDeviceSynchronize()},
+which blocks the host thread until all previously issued GPU work completes.
+
+\begin{pppitfall}
+Omitting \ppinline{cudaDeviceSynchronize()} before a device-to-host
+\ppinline{cudaMemcpy} is a silent race condition: the copy starts while the
+kernel is still running, reading partially written or stale data with no
+error message.
+\end{pppitfall}
+
+\subsection{\texttt{cudaMalloc} and \texttt{cudaMemcpy}}
+\label{ssec:malloc-memcpy}
+
+Before launching a kernel, the programmer must allocate memory on the device
+and copy input data across the PCIe bus. After the kernel completes, results
+are copied back.
+
+\ppinline{cudaMalloc(\&ptr, bytes)} allocates \ppinline{bytes} bytes on the
+GDRAM heap and writes the device pointer to \ppinline{ptr}. It is called from
+host code and is the device analogue of \ppinline{malloc}.
+
+\ppinline{cudaMemcpy(dst, src, bytes, direction)} transfers data. The
+direction flag is one of:
+\begin{itemize}
+  \item \ppinline{cudaMemcpyHostToDevice} (\ppterm{H2D}) --- CPU $\to$ GPU,
+    before the kernel.
+  \item \ppinline{cudaMemcpyDeviceToHost} (\ppterm{D2H}) --- GPU $\to$ CPU,
+    after the kernel.
+\end{itemize}
+
+\ppinline{cudaMemcpy} is \emph{synchronous} with respect to the host by
+default: it does not return until the transfer is complete. H2D and D2H
+transfers are high-latency operations over PCIe; they eat into the time saved
+by GPU parallelism and should be minimised.
+
+Program~\ref{prog:data-transfer} shows the complete four-phase lifecycle.
+
+\begin{ppprogram}{Complete CUDA data-transfer and invocation lifecycle}{prog:data-transfer}
+\begin{lstlisting}[language=C++]
+/* --- Step 1: allocate on device --- */
+float *d_A, *d_B, *d_C;
+CUDA_CHECK(cudaMalloc(&d_A, bytes));
+CUDA_CHECK(cudaMalloc(&d_B, bytes));
+CUDA_CHECK(cudaMalloc(&d_C, bytes));
+
+/* --- Step 2: copy inputs H2D --- */
+CUDA_CHECK(cudaMemcpy(d_A, h_A, bytes, cudaMemcpyHostToDevice));
+CUDA_CHECK(cudaMemcpy(d_B, h_B, bytes, cudaMemcpyHostToDevice));
+
+/* --- Step 3: launch kernel --- */
+int blocks = (N + 255) / 256;
+vector_add<<<blocks, 256>>>(d_A, d_B, d_C, N);
+CUDA_CHECK(cudaDeviceSynchronize());
+
+/* --- Step 4: copy result D2H --- */
+CUDA_CHECK(cudaMemcpy(h_C, d_C, bytes, cudaMemcpyDeviceToHost));
+
+/* --- Step 5: free device memory --- */
+CUDA_CHECK(cudaFree(d_A)); CUDA_CHECK(cudaFree(d_B));
+CUDA_CHECK(cudaFree(d_C));
+\end{lstlisting}
+\end{ppprogram}
+
+\subsection{Inter-SM Memory Sharing}
+\label{ssec:inter-sm}
+
+Within a block, threads share \ppinline{\_\_shared\_\_} memory on the same SM and
+synchronize with \ppinline{\_\_syncthreads()}. Across SM boundaries, the only
+memory accessible to all blocks is the L2 cache and GDRAM---there is no
+cross-SM shared memory. Cross-block communication therefore requires staging
+data through GDRAM and, in general, a second kernel launch to ensure all
+writes are visible before any reads.
+
+\begin{ppkey}
+Within a block: synchronize via \ppinline{\_\_shared\_\_} memory.
+Across blocks: communicate only through L2 cache or GDRAM.
+\end{ppkey}
+
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Code Walkthrough: \texttt{tensor\_bench.cu}}
 \label{sec:code-walkthrough}
 
-% Problem:  C[N][M] += A[N][K] * B[K][M],  N = M = K = 2048
-% This lecture covered three of the five variants in the file.
-% Variants 4 (OMP tiled) and 5 (CUDA tiled) are in the file but NOT covered here.
+To make everything concrete, let us walk through a real benchmark.
+The file \texttt{tensor\_bench.cu} implements the tensor contraction:
+
+\[
+  C[N][M] \mathrel{+}= A[N][K] \times B[K][M], \quad N = M = K = 2048
+\]
+Think of this as a matrix multiplication where the result is accumulated into
+$C$ rather than overwritten. With $N = M = K = 2048$ the computation requires
+$2 \times 2048^3 \approx 34.4$\,GFLOP --- enough work to make the differences
+between implementations clearly visible.
+ 
+The file contains five variants. We will walk through the first three in
+detail. \textbf{Variants 4 (OMP tiled) and 5 (CUDA tiled with shared memory)
+are intentionally skipped here}---shared-memory tiling is the subject of the
+next lecture.
+ 
+\begin{ppnote}
+The five variants in order are:
+\begin{enumerate}
+  \item Sequential --- plain triple-loop, single core.
+  \item OMP flat --- \ppinline{collapse(2)} + SIMD.
+  \item CUDA naive --- one thread per output element, global memory only.
+  \item OMP tiled --- $32{\times}32$ CPU cache tiles (next lecture).
+  \item CUDA tiled --- shared-memory tiling (next lecture).
+\end{enumerate}
+\end{ppnote}
+
+
+%─────────────────────────────────────────────────────────────────────────────
+\subsection{Compiling the Benchmark}
+\label{ssec:compile}
+ 
+Because the file mixes CUDA device code and OpenMP host code, it needs both
+the NVIDIA compiler and the system C compiler:
+ 
+\begin{lstlisting}[language=bash]
+nvcc -O3 -Xcompiler "-O3 -march=native -fopenmp" -lm \
+     -o tensor_bench tensor_bench.cu -lgomp
+\end{lstlisting}
+ 
+Let us read each flag:
+ 
+\begin{itemize}
+  \item \ppinline{nvcc} --- the NVIDIA compiler driver. It splits the
+    \texttt{.cu} file: device code goes to the GPU compiler, host code goes
+    to GCC.
+  \item \ppinline{-O3} --- tells \ppinline{nvcc} to optimise the device
+    (GPU) code at the highest level.
+  \item \ppinline{-Xcompiler "-O3 -march=native -fopenmp"} --- passes these
+    three flags \emph{directly to GCC} for the host code. \ppinline{-O3}
+    and \ppinline{-march=native} give maximum CPU optimisation;
+    \ppinline{-fopenmp} tells GCC to recognise \ppinline{\#pragma omp}
+    directives.
+  \item \ppinline{-lm} --- links the standard C math library (used by
+    \ppinline{fabsf}, \ppinline{sqrtf}, etc.).
+  \item \ppinline{-lgomp} --- links the OpenMP \emph{runtime} library at
+    link time. Note the distinction: \ppinline{-fopenmp} is a compile-time
+    flag that handles pragma parsing; \ppinline{-lgomp} attaches the runtime
+    support that actually creates and schedules threads.
+\end{itemize}
+ 
+\begin{ppnote}
+\ppinline{-fopenmp} and \ppinline{-lgomp} do different jobs and both are
+required. Omitting \ppinline{-fopenmp} means the \ppinline{\#pragma omp}
+directives are silently ignored (the code compiles but runs single-threaded).
+Omitting \ppinline{-lgomp} produces an undefined-symbol linker error.
+\end{ppnote}
+
 
 \subsection{Variant 1 --- Sequential (\texttt{tensor\_sequential})}
 \label{ssec:code-seq}
 
-% Key points:
-%  - Plain triple-loop in ikj order (cache-friendly: stride-1 access to B and C)
-%  - Scalar hoist: a_ip = A[i*k + p] pulled out of the j-loop
-%      avoids one redundant load per j iteration
-%  - No parallelism — used as the correctness reference for all other variants
+\begin{ppprogram}{Tensor contraction --- sequential}{prog:tensor-seq}
+\begin{lstlisting}[language=C++]
+static void tensor_sequential(
+    const float *A, const float *B, float *C, int n, int m, int k)
+{
+    for (int i = 0; i < n; i++)
+        for (int p = 0; p < k; p++) {
+            float a_ip = A[i*k + p];      /* hoisted scalar load */
+            for (int j = 0; j < m; j++)
+                C[i*m + j] += a_ip * B[p*m + j];
+        }
+}
+\end{lstlisting}
+\end{ppprogram}
+
+The loop is ordered $i$-$p$-$j$ (ikj order). Hoisting \ppinline{A[i*k+p]}
+into the scalar \ppinline{a\_ip} avoids one redundant GDRAM load per $j$
+iteration. Both \ppinline{B[p*m+j]} and \ppinline{C[i*m+j]} are accessed with
+unit stride, which is cache-friendly on the CPU. This variant produces the
+reference output used to verify all other variants.
+
 
 \subsection{Variant 2 --- OMP Flat (\texttt{tensor\_omp\_flat})}
 \label{ssec:code-omp}
 
-% Key points:
-%  - #pragma omp parallel for schedule(static) collapse(2)
-%      collapse(2) flattens the (i, p) loop nest into one iteration space
-%      gives ~n*k = 2048*2048 ≈ 4.2 M iterations to distribute across threads
-%      vs only n = 2048 iterations if collapsing just the outer loop
-%  - #pragma omp simd on the inner j-loop: auto-vectorization hint
-%  - Correctness: each (i,p) pair owns a unique row stripe of C — no data race
+\begin{ppprogram}{Tensor contraction --- OMP flat}{prog:tensor-omp}
+\begin{lstlisting}[language=C++]
+static void tensor_omp_flat(
+    const float *A, const float *B, float *C, int n, int m, int k)
+{
+    #pragma omp parallel for schedule(static) collapse(2)
+    for (int i = 0; i < n; i++)
+        for (int p = 0; p < k; p++) {
+            float a_ip = A[i*k + p];
+            #pragma omp simd
+            for (int j = 0; j < m; j++)
+                C[i*m + j] += a_ip * B[p*m + j];
+        }
+}
+\end{lstlisting}
+\end{ppprogram}
+
+\ppinline{collapse(2)} flattens the $(i,p)$ loop nest into a single iteration
+space of $n \times k = 2048^2 \approx 4.2\,\text{M}$ iterations, giving the
+OpenMP runtime far more work to distribute evenly across the 40 threads of the
+server used in the demonstration---compared with only $n = 2048$ iterations if
+just the outer loop were parallelized. The innermost $j$-loop is vectorized
+with \ppinline{\#pragma omp simd}. The matrices are stored as flattened
+one-dimensional arrays so that all accesses are stride-1 in memory.
+
 
 \subsection{Variant 3 --- CUDA Naive (\texttt{kernel\_naive})}
 \label{ssec:code-cuda-naive}
 
-% Key points:
-%  - One thread per output element C[row][col]
-%  - 2D grid: block = (16,16) = 256 threads; grid = (ceil(M/16), ceil(N/16))
-%  - 2D index formula:
-%      row = blockIdx.y * blockDim.y + threadIdx.y   (i-index)
-%      col = blockIdx.x * blockDim.x + threadIdx.x   (j-index)
-%  - 2D bounds check: if (row >= n || col >= m) return;
-%  - Each thread loops over all K elements independently in GDRAM
-%      acc += A[row*k + p] * B[p*m + col]  for p = 0..K-1
-%  - __restrict__: promises no pointer aliasing → enables compiler optimizations
-%  - Memory pressure: O(N*M*K) DRAM reads total — no data reuse across threads
-%      this is the bottleneck that shared-memory tiling will fix (future lecture)
-%  - Timing: CUDA Events (cudaEventRecord / cudaEventElapsedTime) measure
-%      pure kernel time on the GPU, excluding H2D and D2H PCIe transfer cost
-%      kernel-only speedup > end-to-end speedup because transfer is excluded
+\begin{ppprogram}{Tensor contraction --- CUDA naive kernel}{prog:tensor-cuda-naive}
+\begin{lstlisting}[language=C++]
+__global__ void kernel_naive(
+    const float * __restrict__ A,
+    const float * __restrict__ B,
+          float * __restrict__ C,
+    int n, int m, int k)
+{
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row >= n || col >= m) return;       /* 2-D bounds check */
+
+    float acc = 0.f;
+    for (int p = 0; p < k; p++)
+        acc += A[row*k + p] * B[p*m + col];
+
+    C[row*m + col] += acc;
+}
+\end{lstlisting}
+\end{ppprogram}
+
+The host launches this kernel with a 2D grid:
+
+\begin{ppprogram}{CUDA naive --- host launch with CUDA Event timing}{prog:tensor-naive-host}
+\begin{lstlisting}[language=C++]
+dim3 block_naive(16, 16);                          /* 256 threads/block */
+dim3 grid_naive((M + 15) / 16, (N + 15) / 16);   /* ceil in each dim  */
+
+cudaEvent_t ev0, ev1;
+CUDA_CHECK(cudaEventCreate(&ev0));
+CUDA_CHECK(cudaEventCreate(&ev1));
+
+CUDA_CHECK(cudaMemset(dC, 0, SZ * sizeof(float)));
+CUDA_CHECK(cudaEventRecord(ev0));
+kernel_naive<<<grid_naive, block_naive>>>(dA, dB, dC, N, M, K);
+CUDA_CHECK(cudaEventRecord(ev1));
+CUDA_CHECK(cudaEventSynchronize(ev1));
+
+float ms_kernel;
+CUDA_CHECK(cudaEventElapsedTime(&ms_kernel, ev0, ev1));
+\end{lstlisting}
+\end{ppprogram}
+
+Key points about this kernel:
+
+\begin{description}
+  \item[2D thread indexing.] \ppinline{row} and \ppinline{col} extend the 1D
+    index formula to two dimensions, covering the full $N \times M$ output
+    matrix.
+
+  \item[2D bounds check.] \ppinline{if (row >= n || col >= m) return}
+    suppresses surplus threads in both dimensions simultaneously.
+
+  \item[\ppinline{\_\_restrict\_\_}.] Promises the compiler that no two pointers
+    alias the same memory, enabling load/store reordering and prefetching
+    optimizations.
+
+  \item[CUDA Events for kernel-only timing.] \ppinline{cudaEventRecord}
+    inserts a GPU-side timestamp. \ppinline{cudaEventElapsedTime} returns the
+    GPU-measured interval in milliseconds---pure kernel execution time,
+    excluding H2D and D2H PCIe transfer overhead.
+
+  \item[DRAM pressure.] Every thread independently reads $K$ elements of $A$
+    and $K$ elements of $B$ from GDRAM. Total DRAM traffic is $O(NMK)$
+    reads---each element of $A$ and $B$ is re-read by many threads with no
+    reuse. This is the fundamental inefficiency that shared-memory tiling
+    addresses in a future lecture.
+\end{description}
+
+\subsection{Observed Results and Transfer Overhead}
+\label{ssec:bench-results}
+
+Running on a server with 40 CPU cores and an NVIDIA GPU, the benchmark
+reported the following approximate results for $N = M = K = 2048$:
+
+\begin{itemize}
+  \item Sequential: ${\approx}1800$\,ms
+  \item OMP flat (40 threads): ${\approx}90$\,ms \quad (${\sim}20\times$ over sequential)
+  \item CUDA naive (kernel only): ${\approx}9$\,ms \quad (${\sim}200\times$ over sequential,
+    ${\sim}10\times$ over OMP)
+\end{itemize}
+
+\begin{ppnote}
+The H2D transfer (matrices $A$ and $B$, ${\approx}32$\,MB) and D2H transfer
+(matrix $C$, ${\approx}16$\,MB) together took approximately $10$--$11$\,ms
+over PCIe---comparable to the ${\approx}9$\,ms kernel execution time itself.
+This illustrates a fundamental trade-off: the kernel-only speedup is
+${\sim}200\times$, but the end-to-end speedup (including transfers) is
+significantly lower. PCIe transfers must be minimised, and GPU offload is only
+worthwhile when computation time dominates transfer time.
+\end{ppnote}
+
 
 \subsection{Benchmarking Infrastructure}
 \label{ssec:code-bench}
 
-% Key points:
-%  - RUNS = 5; median is reported to reduce OS scheduling jitter
-%      and eliminate one-time GPU warm-up cost from the measurement
-%  - Correctness: max_err() computes max absolute error vs sequential reference
-%      threshold 5e-3 → reported as OK; larger → FAIL
-%      small non-zero errors expected due to floating-point non-associativity
-%  - Transfer cost reported separately:
-%      H2D (A + B): ~32 MB;  D2H (C): ~16 MB
-%      end-to-end time = kernel time + H2D + D2H
-%      important: GPU kernel-only speedup can be much higher than
-%      end-to-end speedup when transfer dominates
+The benchmark runs each variant \ppinline{RUNS = 5} times and reports the
+median elapsed time to reduce OS scheduling jitter and one-time GPU warm-up
+effects. Correctness is verified by computing the maximum absolute error
+between each variant's output and the sequential reference:
+
+\begin{lstlisting}[language=C++]
+static float max_err(const float *ref, const float *cmp, int size) {
+    float e = 0.f;
+    for (int i = 0; i < size; i++) {
+        float d = fabsf(ref[i] - cmp[i]);
+        if (d > e) e = d;
+    }
+    return e;
+}
+\end{lstlisting}
+
+An error below $5 \times 10^{-3}$ is reported as \texttt{OK}. Small non-zero
+errors are expected between parallel variants and the sequential reference
+because floating-point addition is non-associative and different execution
+orders produce slightly different rounding.
+
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Exercises}
