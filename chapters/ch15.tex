@@ -209,14 +209,6 @@ A thread block executes entirely on a single SM, enabling efficient shared memor
 \end{itemize}
 \end{pppitfall}
 
-\subsection{Figure Placeholder}
-
-\begin{ppnote}
-\textbf{[Figure Required]}: Kernel $\rightarrow$ Grid $\rightarrow$ Blocks $\rightarrow$ Threads
-
-This hierarchy explains how a single kernel expands into massive parallel execution.
-\end{ppnote}
-
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Thread Indexing and the Bounds Check}
 \label{sec:thread-indexing}
@@ -811,51 +803,160 @@ because floating-point addition is non-associative and different execution
 orders produce slightly different rounding.
 
 
-% ─────────────────────────────────────────────────────────────────────────────
+%─────────────────────────────────────────────────────────────────────────────
 \section{Exercises}
 \label{sec:exercises}
 
+% ── Exercise 1 ───────────────────────────────────────────────────────────────
 \begin{ppexercises}
-
-  \ppexercise{%
-    % N=1000, threadsPerBlock=256. How many blocks are launched?
-    % How many threads in the last block are idle? Trace the index formula.
-  }
-
-  \ppexercise{%
-    % Extend vector_add to a 2D grid for matrix addition.
-    % Write the row/col index formula and the 2D bounds check.
-  }
-
-  \ppexercise{%
-    % Why can __device__ not be called from host?
-    % What would need to happen architecturally and why would it be costly?
-  }
-
-  \ppexercise{%
-    % A student removes if (i < N). Correct output on one input, wrong on another.
-    % Explain the behavior.
-  }
-
-  \ppexercise{%
-    % In tensor_omp_flat, why does collapse(2) give better load balance
-    % than collapsing only the outer i-loop?
-  }
-
-  \ppexercise{%
-    % In kernel_naive, how many times is each element of A read across the grid?
-    % Compare to sequential. What does this imply for memory bandwidth?
-  }
-
-  \ppexercise{%
-    % Kernel-only speedup = 10x. H2D+D2H transfer = sequential runtime.
-    % What is the end-to-end speedup?
-    % At what transfer/compute ratio does GPU offload cease to be beneficial?
-  }
-
-  \ppexercise{%
-    % 64 registers/thread, 65536-entry register file/SM, max 2048 threads/SM.
-    % What block size maximizes SM occupancy? Show the calculation.
-  }
-
+\ppexercise{%
+  With $N = 1000$ and \ppinline{threadsPerBlock = 256}, how many blocks are
+  launched? How many threads in the last block have no work to do? Verify
+  your answer by tracing the index formula for the last block.}
 \end{ppexercises}
+
+\textbf{Solution.}
+Using the ceiling formula:
+\[
+  \text{blocks}
+  = \left\lceil \frac{N}{\texttt{threadsPerBlock}} \right\rceil
+  = \left\lceil \frac{1000}{256} \right\rceil
+  = 4
+\]
+Total threads launched: $4 \times 256 = 1024$.
+Idle threads in the last block: $1024 - 1000 = \mathbf{24}$.
+
+\textit{Verification.} The last block has \ppinline{blockIdx.x = 3}. Its
+threads compute:
+\[
+  i = 3 \times 256 + \texttt{threadIdx.x}, \quad
+  \texttt{threadIdx.x} \in [0,\,255]
+  \;\Longrightarrow\;
+  i \in [768,\,1023]
+\]
+Elements $[768, 999]$ (232 threads) are within bounds and do useful work.
+Elements $[1000, 1023]$ (24 threads) have $i \geq N$ and are suppressed by
+\ppinline{if (i < N)}. Without that guard, these threads would write beyond
+the end of the allocated array with no runtime error.
+
+% ── Exercise 2 ───────────────────────────────────────────────────────────────
+\begin{ppexercises}
+\ppexercise{%
+  Kernel launches in CUDA are asynchronous. Explain what this means for the
+  host program, and why \ppinline{cudaDeviceSynchronize()} must be called
+  before copying results back to the host.}
+\end{ppexercises}
+
+\textbf{Solution.}
+When the host calls \ppinline{kernel<<<grid, block>>>(...)} the call returns
+immediately --- the host continues executing subsequent statements while the
+GPU runs the kernel in parallel. The host has no implicit knowledge of when
+the GPU has finished.
+
+\ppinline{cudaDeviceSynchronize()} is a blocking call that pauses the CPU
+thread until all previously issued GPU work in the current context is
+complete. It must be called before a device-to-host \ppinline{cudaMemcpy}
+because that transfer is also asynchronous with respect to any in-flight
+kernel. Without the synchronisation barrier, the copy may begin while the
+kernel is still writing to device memory, producing partially written or
+stale results with no error message.
+
+% ── Exercise 3 ───────────────────────────────────────────────────────────────
+\begin{ppexercises}
+\ppexercise{%
+  A student removes the guard \ppinline{if (i < N)} from a vector-addition
+  kernel that uses ceiling block-count arithmetic. The program gives correct
+  output when $N = 256$ (with \ppinline{threadsPerBlock = 256}) but wrong
+  output when $N = 300$. Explain both observations.}
+\end{ppexercises}
+
+\textbf{Solution.}
+
+\textit{Correct for $N = 256$.}
+Ceiling division gives $\lceil 256/256 \rceil = 1$ block of exactly 256
+threads. Every thread computes $i \in [0, 255]$, all of which are valid
+indices. No surplus threads are created, so removing the guard has no
+observable effect.
+
+\textit{Wrong for $N = 300$.}
+Ceiling division gives $\lceil 300/256 \rceil = 2$ blocks, launching 512
+threads in total. The 212 threads with $i \in [300, 511]$ have no
+corresponding array element. Without the guard, each executes
+\ppinline{C[i] = A[i] + B[i]} at out-of-bounds addresses, writing into
+memory adjacent to the allocated arrays. The GPU does not raise a
+segmentation fault for out-of-bounds writes --- execution continues silently
+and the output is corrupted.
+
+The root cause in both cases is the same: the total thread count is always
+rounded up to a whole number of blocks, so the final block almost always
+contains some idle threads that must be explicitly suppressed.
+
+% ── Exercise 4 ───────────────────────────────────────────────────────────────
+\begin{ppexercises}
+\ppexercise{%
+  In \ppinline{tensor\_omp\_flat}, the pragma
+  \ppinline{\#pragma omp parallel for schedule(static) collapse(2)} is used.
+  Why does \ppinline{collapse(2)} over the $(i, p)$ loops give better
+  parallelism than collapsing only the outer $i$-loop? Give a numerical
+  argument using $n = k = 2048$ and 40 threads.}
+\end{ppexercises}
+
+\textbf{Solution.}
+Without \ppinline{collapse(2)}, only the outer $i$-loop is parallelised.
+It has $n = 2048$ iterations, giving each of the 40 threads approximately
+$\lfloor 2048/40 \rfloor = 51$ iterations. Within each iteration the inner
+$p$-loop runs sequentially over all $k = 2048$ steps, so the parallel work
+is coarse-grained and the inner serial work dominates.
+
+With \ppinline{collapse(2)}, the $(i, p)$ space is flattened into a single
+iteration space of:
+\[
+  n \times k = 2048 \times 2048 = 4{,}194{,}304 \text{ iterations}
+\]
+Each thread receives $\lfloor 4{,}194{,}304/40 \rfloor \approx 104{,}857$
+iterations --- more than $2000\times$ the work compared to the $i$-only case.
+The OpenMP runtime has far greater scheduling flexibility, load balance
+improves across all 40 threads, and the innermost serial bottleneck is
+eliminated.
+
+% ── Exercise 5 ───────────────────────────────────────────────────────────────
+\begin{ppexercises}
+\ppexercise{%
+  For $N = M = K = 2048$, the CUDA naive kernel runs in approximately
+  $9$\,ms (kernel only), while the H2D and D2H transfers together take
+  approximately $11$\,ms. The sequential baseline takes $1800$\,ms. Compute
+  the kernel-only speedup and the end-to-end speedup. What does the
+  difference between these two figures tell you about GPU offload?}
+\end{ppexercises}
+
+\textbf{Solution.}
+
+\textit{Kernel-only speedup:}
+\[
+  S_{\text{kernel}}
+  = \frac{T_{\text{seq}}}{T_{\text{kernel}}}
+  = \frac{1800\,\text{ms}}{9\,\text{ms}}
+  = 200\times
+\]
+
+\textit{End-to-end time} (kernel $+$ transfers):
+\[
+  T_{\text{e2e}} = 9\,\text{ms} + 11\,\text{ms} = 20\,\text{ms}
+\]
+
+\textit{End-to-end speedup:}
+\[
+  S_{\text{e2e}}
+  = \frac{T_{\text{seq}}}{T_{\text{e2e}}}
+  = \frac{1800\,\text{ms}}{20\,\text{ms}}
+  = \mathbf{90\times}
+\]
+
+The kernel-only speedup is $200\times$, but the true application-level
+speedup is $90\times$ because the PCIe transfers cost nearly as much as the
+kernel itself. H2D and D2H are high-latency operations that directly reduce
+the net benefit of GPU parallelism. GPU offload is only worthwhile when the
+computation is large enough that kernel time dominates transfer time. For
+workloads that reuse the same data across many kernel launches, the transfer
+cost is amortised over multiple runs, making the kernel-only speedup a more
+accurate predictor of overall performance.
